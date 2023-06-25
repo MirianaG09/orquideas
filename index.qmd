@@ -1,0 +1,294 @@
+---
+title: "Tarea 3"
+author: Miriana Guerrero Dinarte y Steven Chacón
+format:
+  html:
+    toc: true
+    toc_float: true
+    lang: Es
+    theme: morph
+---
+
+### Introducción
+
+El siguiente proyecto corresponde a la **tarea 3 del curso de Procesamiento de Datos Geográficos de la Escuela de Geografía en la Universidad de Costa Rica,** el cual consiste en el desarrollo de un documento Quarto con bloques de código en R para generar tablas, gráficos estadísticos y mapas sobre la riqueza de especies de orquídeas (familia Orchidaceae) en las áreas de conservación en Costa Rica.
+
+![Fuente: Jardín Lankester.](Orquidea-lankester-costa-rica.jpg){fig-align="center"}
+
+Los conjuntos de datos requeridos son un [archivo GeoJSON](https://github.com/gf0604-procesamientodatosgeograficos/2023-i/blob/main/datos/sinac/areas_conservacion_simp_10m.geojson) publicado por el [Sistema Nacional de Áreas de Conservación de Costa Rica (SINAC)](https://www.snitcr.go.cr/ico_servicios_ogc_info?k=bm9kbzo6NDA=&nombre=SINAC) para las Áreas de Conservación las cuales son 11 pero en este conjunto de datos se excluye el [Área de Conservación Marina Coco (ACMC)](https://www.sinac.go.cr/ES/ac/acmic/Paginas/default.aspx), y un [archivo CSV](https://github.com/gf0604-procesamientodatosgeograficos/2023-i/blob/main/datos/gbif/orquideas.csv) del portal de datos de la [Infraestructura Mundial de Información en Biodiversidad (GBIF)](https://doi.org/10.15468/dl.3q7r9m) sobre los registros de orquídeas a nivel nacional.
+
+### Carga de paquetes
+
+```{r}
+#| label: carga-paquetes
+#| warning: false
+#| message: false
+#| code-fold: true
+
+library(tidyverse)
+library(DT)
+library(plotly)
+library(sf)
+library(rgdal)
+library(raster)
+library(terra)
+library(leaflet)
+library(leaflet.extras)
+library(leafem)
+library(viridisLite)
+```
+
+### Carga de datos
+
+```{r}
+#| label: carga-datos-areas-conservación-orquideas
+#| warning: false
+#| message: false
+#| code-fold: true
+
+areas_conservacion <-
+  st_read(
+    dsn = "areas_conservacion_simp_10m.geojson",
+    quiet = TRUE
+  ) |>
+  st_transform(4326)
+
+orquideas <-
+  st_read(
+    "orquideas.csv",
+    options = c(
+      "X_POSSIBLE_NAMES=decimalLongitude",
+      "Y_POSSIBLE_NAMES=decimalLatitude"
+    ),
+    quiet = TRUE
+  )
+
+st_crs(orquideas) <- 4326
+```
+
+### Mapa de riqueza de especies de orquídeas en áreas de conservación
+
+```{r}
+#| label: union-riqueza-orquideas-costa-rica
+#| warning: false
+#| message: false
+#| code-fold: true
+
+orquideas_union_areas_conservacion <-
+  st_join(
+    x = orquideas,
+    y = dplyr::select(areas_conservacion, gml_id, objectid, codigo_ac, nombre_ac, siglas_ac),
+    join = st_within
+  )
+```
+
+```{r}
+#| label: union-riqueza-orquideas-costa-rica-no-espacial
+#| warning: false
+#| message: false
+#| code-fold: true
+
+riqueza_especies_orquideas_conservacion <-
+  orquideas_union_areas_conservacion |>
+  st_drop_geometry() |>
+  group_by(nombre_ac) |>
+  summarize(riqueza_especies_orquideas_conservacion = n_distinct(species, na.rm = TRUE))
+```
+
+```{r}
+#| label: riqueza-orquideas-areas-no-espacial
+#| warning: false
+#| message: false
+#| code-fold: true
+
+# Unión (no espacial) de cantones y riqueza de especies
+areas_union_orquideas <-
+  left_join(
+    x = areas_conservacion,
+    y = riqueza_especies_orquideas_conservacion, 
+    by = "nombre_ac"
+  ) |>
+   replace_na(list(riqueza_especies_orquideas_conservacion = 0))
+```
+
+```{r}
+#| label: mapa-riqueza-orquideas-costa-rica
+#| warning: false
+#| message: false
+#| code-fold: true
+
+# Paleta de colores de riqueza de especies
+colores_orquideas_conservacion <-
+  colorNumeric(
+    palette = "Purples",
+    domain = areas_union_orquideas$riqueza_especies_orquideas_conservacion,
+    na.color = "transparent"
+  )
+
+# Paleta de colores de especies
+colores_orquideas <- colorFactor(
+  palette = turbo(length(unique(orquideas$species))), 
+  domain = orquideas$species
+)
+
+# Mapa leaflet
+leaflet() |>
+  setView(
+    lng = -84.19452,
+    lat = 9.572735,
+    zoom = 7) |>
+  addTiles(group = "Mapa general (OpenStreetMap)") |>
+  addProviderTiles(
+    providers$Esri.WorldImagery, 
+    group = "Imágenes satelitales (ESRI World Imagery)"
+  ) |> 
+  addPolygons(
+    data = areas_union_orquideas,
+    fillColor = ~ colores_orquideas_conservacion(areas_union_orquideas$riqueza_especies_orquideas_conservacion),
+    fillOpacity = 0.8,
+    color = "black",
+    stroke = TRUE,
+    weight = 1.0,
+    popup = paste(
+      paste("<strong>Área de Conservación:</strong>", areas_union_orquideas$nombre_ac),
+      paste("<strong>Riqueza de especies de orquídeas:</strong>", areas_union_orquideas$riqueza_especies_orquideas_conservacion),
+      sep = '<br/>'
+    ),
+    group = "Riqueza de especies de orquídeas"
+  ) |>
+  addScaleBar(
+    position = "bottomleft", 
+    options = scaleBarOptions(imperial = FALSE)
+  ) |>    
+  addLegend(
+    position = "bottomleft",
+    pal = colores_orquideas_conservacion,
+    values = areas_union_orquideas$riqueza_especies_orquideas_conservacion,
+    group = "Riqueza de especies",
+    title = "Riqueza de especies"
+  ) |>
+  addCircleMarkers(
+    data = orquideas,
+    stroke = F,
+    radius = 4,
+    fillColor = ~colores_orquideas(orquideas$species),
+    fillOpacity = 1.0,
+    popup = paste(
+      paste0("<strong>Especie: </strong>", orquideas$species),
+      paste0("<strong>Localidad: </strong>", orquideas$locality),
+      sep = '<br/>'
+    ),    
+    group = "Registros de presencia"
+  ) |>  
+  addLayersControl(
+    baseGroups = c(
+      "Mapa general (OpenStreetMap)", 
+      "Imágenes satelitales (ESRI World Imagery)"
+    ),
+    overlayGroups = c(
+      "Riqueza de especies de orquídeas",
+      "Registros de presencia"
+    )
+  ) |>
+  addResetMapButton() |>
+  addSearchOSM() |>
+  addMouseCoordinates() |>
+  addFullscreenControl() |>
+  hideGroup("Registros de presencia") 
+```
+
+### Tabla de riqueza de especies de orquídeas en áreas de conservación
+
+```{r}
+#| label: tabla-riqueza-orquideas-conservacion
+#| warning: false
+#| message: false
+#| code-fold: true
+
+areas_union_orquideas|>
+  st_drop_geometry() |>
+  dplyr::select(siglas_ac, riqueza_especies_orquideas_conservacion) |>
+  arrange(riqueza_especies_orquideas_conservacion) |>
+  datatable(
+    colnames = c("Nombre de Área de Conservación", "Riqueza de especies de orquídeas"),
+    options = list(
+      pageLength = 10,
+      language = list(url = '//cdn.datatables.net/plug-ins/1.10.11/i18n/Spanish.json')
+    )
+  )
+```
+
+### Gráficos estadísticos
+
+##### Gráfico de barras de riqueza de especies de orquídeas en áreas de conservación
+
+```{r}
+#| label: grafico-barras-riqueza-orquideas-conservacion
+#| warning: false
+#| message: false
+#| code-fold: true
+
+grafico_barras_ggplot2 <-
+  areas_union_orquideas |>
+  ggplot(aes(x = reorder(nombre_ac,riqueza_especies_orquideas_conservacion), y = riqueza_especies_orquideas_conservacion)) +
+  geom_col(
+    aes(
+      text = paste0(
+        "Área de conservación: ", areas_union_orquideas$siglas_ac, "\n",
+        "Riqueza de especies: ", round(after_stat(y), 2)
+      )
+    )    
+  ) +
+  coord_flip() +
+  ggtitle("Variedad de especies en cada Área de Conservación en Costa Rica") +
+  xlab("Áreas de Conservación") +
+  ylab("Riqueza de especies de orquídeas") +
+  labs(caption = "Fuente: SINAC y GBIF.") +
+  theme_grey()
+
+# Gráfico de barras plotly
+ggplotly(grafico_barras_ggplot2, tooltip = "text") |>
+  config(locale = "es")
+```
+
+##### Gráfico de barras de cantidad de registros de presencia por especie, para las 10 especies de orquídeas con más registros
+
+```{r}
+#| label: grafico-barras-cantidad-registros-orquideas-especie-10
+#| warning: false
+#| message: false
+#| code-fold: true
+
+conteo_especies <-
+orquideas |>
+  group_by(species) |>
+  count()
+
+# Diez especies con más ejemplares
+diez_especies <-
+  conteo_especies |>
+  top_n(10, n)
+
+grafico_barras_ggplot <-
+  diez_especies |>
+  ggplot(aes(x = reorder(species,n), y = n)) +
+  geom_col(
+    aes(
+      text = paste0(
+        "\ Nombre de la especie: ", diez_especies$species, "\n",
+        "Cantidad de registros de presencia: ", round(after_stat(y), 2)
+      )
+    )    
+  ) +
+  coord_flip() +
+  ggtitle("Cantidad de registros de presencia por especie para las 10 especies de orquídeas con más registros") +
+  xlab("Nombre de la especie") +
+  ylab("Cantidad de registros") +
+  labs(caption = "Fuente: SINAC y GBIF.") +
+  theme_grey()
+
+# Gráfico de barras plotly
+ggplotly(grafico_barras_ggplot, tooltip = "text") |>
+  config(locale = "es")
+
+```
